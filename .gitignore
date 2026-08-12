@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Виртуальное окружение
+venv/
+.venv/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Настройки и калибровки (локальные данные)
+settings.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

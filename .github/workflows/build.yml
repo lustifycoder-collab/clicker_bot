@@ -72,6 +72,8 @@ jobs:
     needs: [build-windows, build-macos]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download windows artifact
@@ -93,3 +95,5 @@ jobs:
             release/windows/clicker_bot.exe
             release/macos/clicker_bot
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

@@ -26,7 +26,8 @@ class HotkeyManager:
         if self._listener:
             return
         try:
-            self._listener = keyboard.GlobalHotKeys({self.hotkey: self._toggle})
+            hotkey = self._normalize(self.hotkey)
+            self._listener = keyboard.GlobalHotKeys({hotkey: self._toggle})
         except Exception as e:
             # невалидный хоткей (мусор из поля ввода) не должен ронять
             # приложение — просто не стартуем слушатель
@@ -36,6 +37,37 @@ class HotkeyManager:
             return
         self._thread = threading.Thread(target=self._listener.run, daemon=True)
         self._thread.start()
+
+    @staticmethod
+    def _normalize(hotkey):
+        """pynput требует синтаксис pynput.keyboard.HotKey.parse:
+        одиночные функциональные клавиши — в угловых скобках (<f8>),
+        модификаторы — именами (ctrl, alt, shift).
+        Нормализуем строку, чтобы она гарантированно парсилась."""
+        if not hotkey or not hotkey.strip():
+            raise ValueError("Горячая клавиша не задана")
+        parts = hotkey.strip().split('+')
+        mods = {'ctrl', 'alt', 'shift', 'cmd', 'win', 'super'}
+        out = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            low = p.lower()
+            if low in mods:
+                out.append(low)
+            elif low.startswith('<') and low.endswith('>'):
+                # уже в угловых скобках — просто нижний регистр
+                out.append(low)
+            elif low in ('f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+                         'esc', 'enter', 'tab', 'space', 'backspace', 'delete', 'insert',
+                         'home', 'end', 'page_up', 'page_down', 'up', 'down', 'left', 'right'):
+                # функциональные/специальные клавиши — оборачиваем в <>
+                out.append(f'<{low}>')
+            else:
+                # обычные буквы/цифры — одиночный символ
+                out.append(low if len(low) == 1 else f'<{low}>')
+        return '+'.join(out)
 
     def stop(self):
         if self._listener:

@@ -1,12 +1,37 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+# pynput и pyautogui тянут платформенные модули, которые PyInstaller
+# не всегда находит автоматически. Прописываем их явно.
+_hidden = [
+    'pynput',
+    'pynput.keyboard',
+    'pynput.keyboard._base',
+    'pynput.mouse',
+    'pynput.mouse._base',
+    'pynput._util',
+    'pyautogui',
+    'pyautogui._pyautogui_win',
+    'pyautogui._pyautogui_x11',
+    'pyautogui._pyautogui_osx',
+    'pygetwindow',
+    'pyscreeze',
+    'pytweening',
+    'Xlib',
+    'Xlib.display',
+    'Xlib.ext',
+    'Xlib.ext.xtest',
+    'Xlib.xobject',
+    'Xlib.protocol',
+    'Xlib.XK',
+    'Xlib.X',
+]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

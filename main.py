@@ -7,7 +7,11 @@
   3. Калибровка — выбор линии, калибровка точек по уровням и забора.
 
 Кроссплатформенно: Windows + macOS.
+
+Потокобезопасность: все обращения к Tkinter-виджетам идут только из
+главного потока через очередь _ui_queue + root.after.
 """
+import queue
 import threading
 import time
 import tkinter as tk
@@ -30,15 +34,33 @@ class ClickerApp:
         self.root.geometry("720x560")
         self.root.resizable(False, False)
 
+        # очередь для безопасного обновления UI из других потоков
+        self._ui_queue = queue.Queue()
+        self.root.after(100, self._poll_ui)
+
         # движок и хоткей
-        self.engine = BotEngine(on_status=self._set_status, on_log=self._append_log)
+        self.engine = BotEngine(on_status=self._enqueue_status, on_log=self._enqueue_log,
+                               on_stopped=self._enqueue_engine_stopped)
+        self._calibrating = False
+        self._calib_timer = None
         self.hotkey = None
 
         # состояние
         self.settings = dict(config.DEFAULT_SETTINGS)
         saved = storage.load_settings()
         if saved:
-            self.settings.update(saved)
+            # #5: валидируем типы — повреждённые значения из JSON не должны
+            # ронять создание виджетов (IntVar/DoubleVar) на старте.
+            try:
+                self.settings["line"] = str(saved["line"])
+                self.settings["max_level"] = int(saved["max_level"])
+                self.settings["collect_level"] = int(saved["collect_level"])
+                self.settings["rest_after_collect"] = int(saved["rest_after_collect"])
+                self.settings["step_delay"] = float(saved["step_delay"])
+                self.settings["hotkey"] = str(saved["hotkey"])
+            except (KeyError, TypeError, ValueError):
+                # любое испорченное поле — оставляем дефолт, применяем частично
+                pass
 
         self.var_line = tk.StringVar(value=self.settings["line"])
         self.var_max_level = tk.IntVar(value=self.settings["max_level"])
@@ -73,7 +95,7 @@ class ClickerApp:
         btns.pack(pady=6)
         self.btn_start = ttk.Button(btns, text="▶ Старт", command=self._toggle)
         self.btn_start.pack(side="left", padx=5)
-        self.btn_stop = ttk.Button(btns, text="■ Стоп", command=self.engine.stop)
+        self.btn_stop = ttk.Button(btns, text="■ Стоп", command=self._stop)
         self.btn_stop.pack(side="left", padx=5)
 
         # горячая клавиша
@@ -174,82 +196,174 @@ class ClickerApp:
         ttk.Button(btns, text="🔄 Обновить список", command=self._refresh_calib).pack(side="left", padx=5)
         return tab
 
-    # ---------- логика ----------
-    def _set_status(self, msg):
-        self.var_status.set(msg)
+    # ---------- потокобезопасный UI ----------
+    def _enqueue_status(self, msg):
+        """Из любого потока: кладём обновление статуса в очередь."""
+        self._ui_queue.put(("status", msg))
 
+    def _enqueue_log(self, msg):
+        """Из любого потока: кладём строку лога в очередь."""
+        self._ui_queue.put(("log", msg))
+
+    def _poll_ui(self):
+        """Главный поток: разбирает очередь и обновляет виджеты."""
+        try:
+            while True:
+                kind, payload = self._ui_queue.get_nowait()
+                if kind == "status":
+                    self.var_status.set(payload)
+                elif kind == "log":
+                    self.txt_log.configure(state="normal")
+                    self.txt_log.insert("end", _log_ts(payload) + "\n")
+                    self.txt_log.see("end")
+                    self.txt_log.configure(state="disabled")
+                elif kind == "calib_done":
+                    # калибровка завершилась (клик или таймаут)
+                    self._restore_window()
+                    self._calibrating = False
+                elif kind == "refresh_calib":
+                    self._refresh_calib()
+                elif kind == "restore":
+                    self._restore_window()
+                elif kind == "engine_stopped":
+                    # движок сам остановился (ошибка/завершение) — синхронизируем кнопку
+                    self.btn_start.config(text="▶ Старт")
+                elif kind == "toggle":
+                    self._toggle()
+        except queue.Empty:
+            pass
+        self.root.after(100, self._poll_ui)
+
+    # ---------- логика ----------
     def _append_log(self, msg):
+        """Прямая запись в лог. Вызывать ТОЛЬКО из главного потока."""
         self.txt_log.configure(state="normal")
         self.txt_log.insert("end", _log_ts(msg) + "\n")
         self.txt_log.see("end")
         self.txt_log.configure(state="disabled")
 
     def _toggle(self):
+        """Вызывается из главного потока (кнопка) или из потока хоткея."""
         if self.engine.is_running():
             self.engine.stop()
             self.btn_start.config(text="▶ Старт")
         else:
-            self._save_settings(silent=True)
+            if not self._save_settings(silent=True):
+                return
             self.engine.settings = dict(self.settings)
             self.engine.start()
             self.btn_start.config(text="⏸ Стоп")
 
+    def _stop(self):
+        self.engine.stop()
+        self.btn_start.config(text="▶ Старт")
+
     def _save_settings(self, silent=False):
-        self.settings["line"] = self.var_line.get()
-        self.settings["max_level"] = int(self.var_max_level.get())
-        self.settings["collect_level"] = int(self.var_collect_level.get())
-        self.settings["rest_after_collect"] = int(self.var_rest.get())
-        self.settings["step_delay"] = float(self.var_delay.get())
-        self.settings["hotkey"] = self.var_hotkey.get().strip() or config.DEFAULT_HOTKEY
+        try:
+            self.settings["line"] = self.var_line.get()
+            self.settings["max_level"] = int(self.var_max_level.get())
+            self.settings["collect_level"] = int(self.var_collect_level.get())
+            self.settings["rest_after_collect"] = int(self.var_rest.get())
+            self.settings["step_delay"] = float(self.var_delay.get())
+            self.settings["hotkey"] = self.var_hotkey.get().strip() or config.DEFAULT_HOTKEY
+        except (ValueError, tk.TclError):
+            if not silent:
+                messagebox.showerror("Ошибка", "Проверьте значения полей (целые числа, задержка — число с точкой).")
+            return False
+        # sanity: забор не раньше 1, и не больше max_level
+        self.settings["collect_level"] = min(
+            self.settings["collect_level"], self.settings["max_level"])
+        self.settings["collect_level"] = max(1, self.settings["collect_level"])
+        self.settings["max_level"] = max(1, self.settings["max_level"])
         storage.save_settings(self.settings)
         if not silent:
             self._append_log("Настройки сохранены")
+        return True
 
     def _apply_hotkey(self):
-        self._save_settings(silent=True)
+        if not self._save_settings(silent=True):
+            return
         self._start_hotkey()
         self._append_log(f"Горячая клавиша: {self.settings['hotkey']}")
 
     def _start_hotkey(self):
+        # единая точка смены/установки хоткея: set_hotkey сам делает stop+start
         if self.hotkey:
-            self.hotkey.stop()
-        self.hotkey = HotkeyManager(self.settings["hotkey"], self._toggle)
-        self.hotkey.start()
+            self.hotkey.set_hotkey(self.settings["hotkey"])
+        else:
+            self.hotkey = HotkeyManager(self.settings["hotkey"], self._on_hotkey,
+                                        on_error=self._enqueue_log)
+            self.hotkey.start()
+
+    def _on_hotkey(self):
+        """Хоткей срабатывает в потоке pynput — не трогаем Tkinter напрямую.
+        Кладём событие в очередь, главный поток разберёт его через _poll_ui."""
+        self._ui_queue.put(("toggle", None))
 
     # ---------- калибровка ----------
     def _calibrate_selected(self):
+        if not self._save_settings(silent=True):
+            return
+        # защита от одновременной калибровки двух точек (два слушателя мыши)
+        if getattr(self, "_calibrating", False):
+            messagebox.showinfo("Калибровка", "Калибровка уже идёт — дождитесь завершения")
+            return
         sel = self.cal_tree.selection()
         if not sel:
             messagebox.showinfo("Калибровка", "Выберите уровень или «Забрать деньги»")
             return
+        self._calibrating = True
         line = self.cal_line.get()
         item = sel[0]
 
         def on_done(point, level, is_collect):
+            # выполняется в потоке калибровки — НЕ трогаем Tkinter напрямую,
+            # шлём всё в главный поток через очередь
             if is_collect:
                 storage.set_collect(line, point)
-                self._append_log(f"Точка забора ({line}): {point[0]},{point[1]}")
+                self._enqueue_log(f"Точка забора ({line}): {point[0]},{point[1]}")
             else:
                 storage.set_point(line, level, point)
-                self._append_log(f"Уровень {level} ({line}): {point[0]},{point[1]}")
-            self._refresh_calib()
+                self._enqueue_log(f"Уровень {level} ({line}): {point[0]},{point[1]}")
+            self._ui_queue.put(("refresh_calib", None))
 
         if item == "collect":
-            # калибровка забора: свернуть GUI, чтобы кликнуть по игре
             self._minimize_for_calib(lambda: self._run_calib(line, None, True, on_done))
         else:
             lv = int(item.split("_")[1])
             self._minimize_for_calib(lambda: self._run_calib(line, lv, False, on_done))
 
+    def _enqueue_calib_done(self):
+        self._ui_queue.put(("calib_done", None))
+
+    def _enqueue_engine_stopped(self):
+        self._ui_queue.put(("engine_stopped", None))
+
     def _minimize_for_calib(self, action):
         self.root.iconify()
-        threading.Timer(1.0, action).start()
+        # даём окну время свернуться, затем стартуем калибровку.
+        # Timer регистрируем как non-daemon child — при закрытии приложения
+        # отменяем через _cancel_calib_timer.
+        self._calib_timer = threading.Timer(1.0, action)
+        self._calib_timer.daemon = True
+        self._calib_timer.start()
+
+    def _cancel_calib_timer(self):
+        t = getattr(self, "_calib_timer", None)
+        if t:
+            t.cancel()
+            self._calib_timer = None
 
     def _run_calib(self, line, level, is_collect, on_done):
         from calibrate import calibrate_point
-        calibrate_point(line, level, is_collect, on_done)
-        # вернуть окно после калибровки
-        threading.Timer(16.0, self._restore_window).start()
+        # on_finish вызывается сразу после клика ИЛИ таймаута —
+        # окно восстанавливается без фиксированной задержки 16с.
+        # on_timeout — отдельный callback только при таймауте (нет клика).
+        def on_timeout():
+            self._enqueue_log("[!] калибровка не завершена: таймаут 15с, точка не сохранена")
+        calibrate_point(line, level, is_collect, on_done,
+                        on_finish=self._enqueue_calib_done,
+                        on_timeout=on_timeout)
 
     def _restore_window(self):
         try:
@@ -279,6 +393,7 @@ class ClickerApp:
 
     def on_close(self):
         self.engine.stop()
+        self._cancel_calib_timer()
         if self.hotkey:
             self.hotkey.stop()
         self.root.destroy()

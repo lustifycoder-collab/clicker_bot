@@ -58,6 +58,20 @@ class ClickerApp:
                 self.settings["rest_after_collect"] = int(saved["rest_after_collect"])
                 self.settings["step_delay"] = float(saved["step_delay"])
                 self.settings["hotkey"] = str(saved["hotkey"])
+                # новые поля стратегии и распознавания цвета (могут отсутствовать
+                # в старых settings.json — тогда остаются дефолты)
+                if "win_color" in saved:
+                    self.settings["win_color"] = str(saved["win_color"])
+                if "lose_color" in saved:
+                    self.settings["lose_color"] = str(saved["lose_color"])
+                if "color_tolerance" in saved:
+                    self.settings["color_tolerance"] = int(saved["color_tolerance"])
+                if "result_delay" in saved:
+                    self.settings["result_delay"] = float(saved["result_delay"])
+                if "lose_pause" in saved:
+                    self.settings["lose_pause"] = float(saved["lose_pause"])
+                if isinstance(saved.get("bet_strategy"), list):
+                    self.settings["bet_strategy"] = saved["bet_strategy"]
             except (KeyError, TypeError, ValueError):
                 # любое испорченное поле — оставляем дефолт, применяем частично
                 pass
@@ -147,6 +161,33 @@ class ClickerApp:
         ttk.Spinbox(form, from_=0.1, to=10, increment=0.1, textvariable=self.var_delay,
                     width=8).grid(row=4, column=1, sticky="w", pady=4)
 
+        # --- распознавание результата по цвету ---
+        self.var_win_color = tk.StringVar(value=self.settings.get("win_color", config.DEFAULT_WIN_COLOR))
+        self.var_lose_color = tk.StringVar(value=self.settings.get("lose_color", config.DEFAULT_LOSE_COLOR))
+        self.var_tolerance = tk.IntVar(value=self.settings.get("color_tolerance", config.DEFAULT_COLOR_TOLERANCE))
+        self.var_result_delay = tk.DoubleVar(value=self.settings.get("result_delay", config.DEFAULT_RESULT_DELAY))
+        self.var_lose_pause = tk.DoubleVar(value=self.settings.get("lose_pause", config.DEFAULT_LOSE_PAUSE))
+
+        ttk.Separator(form, orient="horizontal").grid(row=5, column=0, columnspan=2, sticky="ew", pady=8)
+
+        ttk.Label(form, text="Цвет выигрыша (#RRGGBB):").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.var_win_color, width=10).grid(row=6, column=1, sticky="w", pady=4)
+
+        ttk.Label(form, text="Цвет проигрыша (#RRGGBB):").grid(row=7, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.var_lose_color, width=10).grid(row=7, column=1, sticky="w", pady=4)
+
+        ttk.Label(form, text="Допуск цвета (0..255):").grid(row=8, column=0, sticky="w", pady=4)
+        ttk.Spinbox(form, from_=0, to=255, textvariable=self.var_tolerance,
+                    width=8).grid(row=8, column=1, sticky="w", pady=4)
+
+        ttk.Label(form, text="Пауза перед чтением цвета (сек):").grid(row=9, column=0, sticky="w", pady=4)
+        ttk.Spinbox(form, from_=0.0, to=10, increment=0.1, textvariable=self.var_result_delay,
+                    width=8).grid(row=9, column=1, sticky="w", pady=4)
+
+        ttk.Label(form, text="Пауза после проигрыша (сек):").grid(row=10, column=0, sticky="w", pady=4)
+        ttk.Spinbox(form, from_=0.0, to=60, increment=0.5, textvariable=self.var_lose_pause,
+                    width=8).grid(row=10, column=1, sticky="w", pady=4)
+
         ttk.Button(tab, text="💾 Сохранить настройки", command=self._save_settings).pack(pady=10)
 
         # таблица уровней (вшита, не редактируется)
@@ -187,6 +228,8 @@ class ClickerApp:
         for lv in range(1, config.MAX_LEVEL + 1):
             self.cal_tree.insert("", "end", iid=f"level_{lv}", values=(f"Уровень {lv}",))
         self.cal_tree.insert("", "end", iid="collect", values=("Забрать деньги",))
+        self.cal_tree.insert("", "end", iid="bet", values=("Кнопка ставки/боя",))
+        self.cal_tree.insert("", "end", iid="result_pixel", values=("Пиксель результата (цвет)",))
         self.cal_tree.pack(fill="both", expand=True)
 
         btns = ttk.Frame(tab)
@@ -266,9 +309,24 @@ class ClickerApp:
             self.settings["rest_after_collect"] = int(self.var_rest.get())
             self.settings["step_delay"] = float(self.var_delay.get())
             self.settings["hotkey"] = self.var_hotkey.get().strip() or config.DEFAULT_HOTKEY
+            # распознавание по цвету
+            win_color = self.var_win_color.get().strip()
+            lose_color = self.var_lose_color.get().strip()
+            # простая валидация hex-цвета
+            for c in (win_color, lose_color):
+                h = c.lstrip('#')
+                if len(h) != 6:
+                    raise ValueError("bad color")
+                int(h, 16)
+            self.settings["win_color"] = win_color
+            self.settings["lose_color"] = lose_color
+            self.settings["color_tolerance"] = int(self.var_tolerance.get())
+            self.settings["result_delay"] = float(self.var_result_delay.get())
+            self.settings["lose_pause"] = float(self.var_lose_pause.get())
         except (ValueError, tk.TclError):
             if not silent:
-                messagebox.showerror("Ошибка", "Проверьте значения полей (целые числа, задержка — число с точкой).")
+                messagebox.showerror("Ошибка", "Проверьте значения полей (целые числа, задержка — число с точкой,\n"
+                                               "цвета — в формате #RRGGBB).")
             return False
         # sanity: забор не раньше 1, и не больше max_level
         self.settings["collect_level"] = min(
@@ -316,10 +374,15 @@ class ClickerApp:
         line = self.cal_line.get()
         item = sel[0]
 
-        def on_done(point, level, is_collect):
+        def on_done(point, level, is_collect, named_point=None):
             # выполняется в потоке калибровки — НЕ трогаем Tkinter напрямую,
             # шлём всё в главный поток через очередь
-            if is_collect:
+            if named_point:
+                storage.set_named_point(line, named_point, point)
+                name_ru = {"bet": "Кнопка ставки/боя", "result_pixel": "Пиксель результата"}.get(
+                    named_point, named_point)
+                self._enqueue_log(f"{name_ru} ({line}): {point[0]},{point[1]}")
+            elif is_collect:
                 storage.set_collect(line, point)
                 self._enqueue_log(f"Точка забора ({line}): {point[0]},{point[1]}")
             else:
@@ -329,6 +392,8 @@ class ClickerApp:
 
         if item == "collect":
             self._minimize_for_calib(lambda: self._run_calib(line, None, True, on_done))
+        elif item in ("bet", "result_pixel"):
+            self._minimize_for_calib(lambda: self._run_calib(line, None, False, on_done, named_point=item))
         else:
             lv = int(item.split("_")[1])
             self._minimize_for_calib(lambda: self._run_calib(line, lv, False, on_done))
@@ -354,7 +419,7 @@ class ClickerApp:
             t.cancel()
             self._calib_timer = None
 
-    def _run_calib(self, line, level, is_collect, on_done):
+    def _run_calib(self, line, level, is_collect, on_done, named_point=None):
         from calibrate import calibrate_point
         # on_finish вызывается сразу после клика ИЛИ таймаута —
         # окно восстанавливается без фиксированной задержки 16с.
@@ -363,7 +428,8 @@ class ClickerApp:
             self._enqueue_log("[!] калибровка не завершена: таймаут 15с, точка не сохранена")
         calibrate_point(line, level, is_collect, on_done,
                         on_finish=self._enqueue_calib_done,
-                        on_timeout=on_timeout)
+                        on_timeout=on_timeout,
+                        named_point=named_point)
 
     def _restore_window(self):
         try:
@@ -390,6 +456,12 @@ class ClickerApp:
         cp = prof.get("collect")
         clabel = "Забрать деньги" + (f"  [{cp[0]},{cp[1]}]" if cp else "  —")
         self.cal_tree.item("collect", values=(clabel,))
+        bp = prof.get("bet")
+        blabel = "Кнопка ставки/боя" + (f"  [{bp[0]},{bp[1]}]" if bp else "  —")
+        self.cal_tree.item("bet", values=(blabel,))
+        rp = prof.get("result_pixel")
+        rlabel = "Пиксель результата (цвет)" + (f"  [{rp[0]},{rp[1]}]" if rp else "  —")
+        self.cal_tree.item("result_pixel", values=(rlabel,))
 
     def on_close(self):
         self.engine.stop()

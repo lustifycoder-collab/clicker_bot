@@ -62,7 +62,7 @@ SETTINGS_PATH = _settings_path()
 
 
 def _default_profile():
-    return {"levels": {}, "collect": None}
+    return {"levels": {}, "collect": None, "bet": None, "result_pixel": None}
 
 
 def _default_data():
@@ -134,6 +134,14 @@ def load_all():
                 result[line]["collect"] = [int(cp[0]), int(cp[1])]
             except (ValueError, TypeError):
                 result[line]["collect"] = None
+        # именованные точки: кнопка ставки, пиксель результата
+        for name in ("bet", "result_pixel"):
+            np_ = prof.get(name)
+            if isinstance(np_, (list, tuple)) and len(np_) >= 2:
+                try:
+                    result[line][name] = [int(np_[0]), int(np_[1])]
+                except (ValueError, TypeError):
+                    result[line][name] = None
     return result
 
 
@@ -155,6 +163,13 @@ def set_collect(line, point):
     """Сохранить точку кнопки 'забрать деньги'."""
     cal = load_all()
     cal[line]["collect"] = [int(point[0]), int(point[1])]
+    save_all(cal)
+
+
+def set_named_point(line, name, point):
+    """Сохранить именованную точку (bet — кнопка ставки, result_pixel — пиксель результата)."""
+    cal = load_all()
+    cal[line][name] = [int(point[0]), int(point[1])]
     save_all(cal)
 
 

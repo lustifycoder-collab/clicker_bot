@@ -1,7 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""
+PyInstaller spec для clicker_bot.
 
-# pynput и pyautogui тянут платформенные модули, которые PyInstaller
-# не всегда находит автоматически. Прописываем их явно.
+Использование:
+    pyinstaller clicker_bot.spec
+
+Платформенные hiddenimports подставляются по sys.platform —
+pyautogui/pynput тянут разные нативные модули на Windows/macOS/Linux,
+и PyInstaller не всегда находит их автоматически. Несуществующие на
+данной платформе модули в список НЕ включаем (иначе warning в логе).
+"""
+import sys
+
+# Общие для всех платформ
 _hidden = [
     'pynput',
     'pynput.keyboard',
@@ -10,21 +21,31 @@ _hidden = [
     'pynput.mouse._base',
     'pynput._util',
     'pyautogui',
-    'pyautogui._pyautogui_win',
-    'pyautogui._pyautogui_x11',
-    'pyautogui._pyautogui_osx',
-    'pygetwindow',
     'pyscreeze',
     'pytweening',
-    'Xlib',
-    'Xlib.display',
-    'Xlib.ext',
-    'Xlib.ext.xtest',
-    'Xlib.xobject',
-    'Xlib.protocol',
-    'Xlib.XK',
-    'Xlib.X',
 ]
+
+if sys.platform == 'win32':
+    _hidden += [
+        'pyautogui._pyautogui_win',
+        'pygetwindow',
+    ]
+elif sys.platform == 'darwin':
+    _hidden += [
+        'pyautogui._pyautogui_osx',
+    ]
+else:  # linux и прочие X11
+    _hidden += [
+        'pyautogui._pyautogui_x11',
+        'Xlib',
+        'Xlib.display',
+        'Xlib.ext',
+        'Xlib.ext.xtest',
+        'Xlib.xobject',
+        'Xlib.protocol',
+        'Xlib.XK',
+        'Xlib.X',
+    ]
 
 a = Analysis(
     ['main.py'],
@@ -61,3 +82,12 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+# На macOS дополнительно собираем .app-бандл
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name='clicker_bot.app',
+        icon=None,
+        bundle_identifier='com.clicker.bot',
+    )

@@ -20,18 +20,21 @@ import storage
 class Calibrator:
     """Интерактивная калибровка одной точки."""
 
-    def __init__(self, line, level=None, is_collect=False, on_done=None, on_finish=None, on_timeout=None):
+    def __init__(self, line, level=None, is_collect=False, on_done=None, on_finish=None, on_timeout=None,
+                 named_point=None):
         """
-        line      — левая/правая/ручная
-        level     — номер уровня (None для кнопки забора)
-        is_collect— True если калибруем кнопку 'забрать деньги'
-        on_done   — callback(point, level, is_collect) при успешном клике
-        on_finish — callback() при завершении (клик или таймаут)
-        on_timeout— callback() только при таймауте (клик не был сделан)
+        line        — левая/правая/ручная
+        level       — номер уровня (None для кнопки забора)
+        is_collect  — True если калибруем кнопку 'забрать деньги'
+        on_done     — callback(point, level, is_collect, named_point) при успешном клике
+        on_finish   — callback() при завершении (клик или таймаут)
+        on_timeout  — callback() только при таймауте (клик не был сделан)
+        named_point — имя именованной точки ('bet' / 'result_pixel') или None
         """
         self.line = line
         self.level = level
         self.is_collect = is_collect
+        self.named_point = named_point
         self.on_done = on_done
         self.on_finish = on_finish
         self.on_timeout = on_timeout
@@ -55,7 +58,12 @@ class Calibrator:
         listener.start()
 
         print("[калибровка] наведите курсор на точку и кликните ЛКМ")
-        print(f"[калибровка] цель: {'забрать деньги' if self.is_collect else 'уровень ' + str(self.level)}")
+        if self.named_point:
+            target = {"bet": "кнопка ставки/боя", "result_pixel": "пиксель результата"}.get(
+                self.named_point, self.named_point)
+        else:
+            target = "забрать деньги" if self.is_collect else "уровень " + str(self.level)
+        print(f"[калибровка] цель: {target}")
         # ждём клик или таймаут 15 секунд
         self._stop.wait(15.0)
         listener.stop()
@@ -79,13 +87,14 @@ class Calibrator:
         self._clicked = True
         self._stop.set()
         if self.on_done:
-            self.on_done((x, y), self.level, self.is_collect)
+            self.on_done((x, y), self.level, self.is_collect, self.named_point)
         return False  # отключить слушатель
 
 
-def calibrate_point(line, level=None, is_collect=False, on_done=None, on_finish=None, on_timeout=None):
+def calibrate_point(line, level=None, is_collect=False, on_done=None, on_finish=None, on_timeout=None,
+                    named_point=None):
     """Запускает калибровку в отдельном потоке (не блокирует GUI)."""
-    cal = Calibrator(line, level, is_collect, on_done, on_finish, on_timeout)
+    cal = Calibrator(line, level, is_collect, on_done, on_finish, on_timeout, named_point)
     t = threading.Thread(target=cal.start, daemon=True)
     t.start()
     return t

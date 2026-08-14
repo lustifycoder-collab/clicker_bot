@@ -6,6 +6,11 @@ on:
     tags: [ "v*" ]
   workflow_dispatch: {}   # кнопка "Run workflow" вручную
 
+# Чтобы не гонять несколько сборок одного и того же коммита параллельно
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -19,6 +24,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Sanity check (компиляция)
+        run: python -m py_compile main.py bot_engine.py config.py calibrate.py storage.py hotkey.py
 
       - name: Install dependencies
         run: |
@@ -38,7 +46,8 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    runs-on: macos-latest
+    # macos-14 = Apple Silicon (arm64). Для Intel используй macos-13.
+    runs-on: macos-14
 
     steps:
       - name: Checkout
@@ -50,30 +59,42 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Sanity check (компиляция)
+        run: python -m py_compile main.py bot_engine.py config.py calibrate.py storage.py hotkey.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # БЕЗ --onefile: на macOS --onefile даёт голый бинарь, а не .app-бандл.
+      # --windowed создаёт dist/clicker_bot.app
       - name: Build .app
         run: |
-          pyinstaller --onefile --windowed --name clicker_bot main.py
+          pyinstaller --windowed --name clicker_bot \
+            --osx-bundle-identifier com.clicker.bot \
+            main.py
+
+      # .app — это папка; артефакты удобнее отдавать zip'ом
+      - name: Zip .app
+        run: |
+          cd dist && zip -r -y clicker_bot-macos.zip clicker_bot.app
 
       - name: Upload artifact (macos)
         uses: actions/upload-artifact@v4
         with:
           name: clicker_bot-macos
-          path: dist/clicker_bot
+          path: dist/clicker_bot-macos.zip
           if-no-files-found: error
 
-  # Создаёт GitHub Release с .exe и .app, только когда пушим тег v*
+  # Создаёт GitHub Release с .exe и .app.zip, только когда пушим тег v*
   release:
     needs: [build-windows, build-macos]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write   # встроенного GITHUB_TOKEN достаточно, PAT не нужен
 
     steps:
       - name: Download windows artifact
@@ -93,7 +114,6 @@ jobs:
         with:
           files: |
             release/windows/clicker_bot.exe
-            release/macos/clicker_bot
+            release/macos/clicker_bot-macos.zip
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          # встроенный GITHUB_TOKEN подставляется автоматически
